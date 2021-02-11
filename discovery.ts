@@ -12,12 +12,19 @@ const sub = new Redis(REDIS_URL);
 redis.defineCommand('getCurrentProxy', {
     lua: `
     local nodes = redis.call("smembers", "colyseus:nodes")
+    if (#nodes < 1) then
+        return ""
+    end
+    
     local nextIdx = redis.call("incr", "currIdx")
     
     local nextIdx = nextIdx % #nodes
     
     if (nextIdx==0) then
-        return ""
+        if (#nodes==0) then
+            return ""
+        end
+        nextIdx = nextIdx + 1
     end
     
     local processId = string.match(nodes[nextIdx], "(.*)/")
