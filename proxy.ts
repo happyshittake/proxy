@@ -2,22 +2,19 @@ import fs from "fs";
 import http from "http";
 import https from "https";
 import httpProxy from "http-proxy";
-import { getNodeList, listen, Node, Action, cleanUpNode } from "./discovery";
+import {Action, cleanUpNode, getCurrentProxy, getNodeList, listen, Node, redisGet, redisSet} from "./discovery";
 
 const HTTPS_PORT = 443;
 const HTTP_PORT = Number(process.env.PORT || 80);
 const HTTP_IP = process.env.IP || '0.0.0.0';
 const SOCKET_TIMEOUT = Number(process.env.SOCKET_TIMEOUT || 30000); // 30 seconds default socket timeout
-
+const processIDKey = 'key_process_id'
 const processIds: { [id: string]: httpProxy } = {}
-
-let currProxy: number = 0;
-const proxies: httpProxy[] = [];
 
 http.globalAgent = new http.Agent({ keepAlive: true });
 https.globalAgent = new https.Agent({ keepAlive: true });
 
-function getProxy (url: string) {
+async function getProxy(url: string) {
   let proxy: httpProxy | undefined;
 
   /**
@@ -25,17 +22,26 @@ function getProxy (url: string) {
    */
   const matchedProcessId = url.match(/\/([a-zA-Z0-9\-_]+)\/[a-zA-Z0-9\-_]+\?/);
   if (matchedProcessId && matchedProcessId[1]) {
-    proxy = processIds[matchedProcessId[1]];
+    const processId = await redisGet(`${processIDKey}:${matchedProcessId[1]}`);
+    if (processId) {
+      proxy = processIds[processId]
+    }
   }
 
   if (proxy) {
-    console.debug("Room is at proxy", proxies.indexOf(proxy));
+    console.debug("Room is at proxy", proxy);
     return proxy;
 
   } else {
-    currProxy = (currProxy + 1) % proxies.length;
-    console.debug("Using proxy", currProxy, url);
-    return proxies[currProxy];
+    const processId = await getCurrentProxy();
+    proxy = processIds[processId]
+    console.debug("Using proxy", proxy, url);
+
+    if (matchedProcessId && matchedProcessId[1]) {
+      await redisSet(`${processIDKey}:${matchedProcessId[1]}`, processId)
+    }
+
+    return proxy;
   }
 }
 
@@ -75,18 +81,10 @@ function register(node: Node) {
   });
 
   processIds[node.processId] = proxy;
-  proxies.push(proxy);
-
-  currProxy = proxies.length - 1;
 }
 
 function unregister(node: Node) {
-  const proxy = processIds[node.processId];
-
-  proxies.splice(proxies.indexOf(proxy), 1);
   delete processIds[node.processId];
-
-  currProxy = proxies.length - 1;
 }
 
 // listen for node additions and removals through Redis
@@ -105,8 +103,8 @@ getNodeList().
   then(nodes => nodes.forEach(node => register(node))).
   catch(err => console.error(err));
 
-const reqHandler = (req: http.IncomingMessage, res: http.ServerResponse) => {
-  const proxy = getProxy(req.url!);
+const reqHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+  const proxy = await getProxy(req.url!);
 
   if (proxy) {
     proxy.web(req, res);
@@ -131,8 +129,8 @@ server.on('error', (err) => {
   console.error(`Server error: ${err.stack}`);
 });
 
-server.on('upgrade', (req, socket, head) => {
-  const proxy = getProxy(req.url!);
+server.on('upgrade', async (req, socket, head) => {
+  const proxy = await getProxy(req.url!);
 
   if (proxy) {
     proxy.ws(req, socket, head);
