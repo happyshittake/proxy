@@ -8,32 +8,6 @@ const DISCOVERY_CHANNEL = "colyseus:nodes:discovery";
 const redis = new Redis(REDIS_URL);
 const sub = new Redis(REDIS_URL);
 
-
-redis.defineCommand('getCurrentProxy', {
-    lua: `
-    local nodes = redis.call("smembers", "colyseus:nodes")
-    if (#nodes < 1) then
-        return ""
-    end
-    
-    local nextIdx = redis.call("incr", "currIdx")
-    
-    local nextIdx = nextIdx % #nodes
-    
-    if (nextIdx==0) then
-        if (#nodes==0) then
-            return ""
-        end
-        nextIdx = nextIdx + 1
-    end
-    
-    local processId = string.match(nodes[nextIdx], "(.*)/")
-    redis.call("set","currIdx", nextIdx)
-    
-    return processId
-    `
-});
-
 export interface Node {
     processId: string;
     address?: string
@@ -65,19 +39,20 @@ export async function cleanUpNode(node: Node) {
     await redis.hdel(ROOM_COUNT_KEY, node.processId);
 }
 
-export async function getCurrentProxy(): Promise<string> {
-    // @ts-ignore
-    return await redis.getCurrentProxy();
+export async function getNode(processId: string): Promise<Node | null> {
+    const [_, nodes] = await redis.sscan(NODES_SET, 0, "match", `${processId}*`);
+    if (!nodes || nodes.length < 1) {
+        return null;
+    }
+
+    return parseNode(nodes[0]);
 }
 
-export async function redisSet(key: Redis.KeyType, value: Redis.ValueType) {
-    await redis.set(key, value);
-}
+export async function getRandNode(): Promise<Node | null> {
+    const node = await redis.srandmember(NODES_SET);
+    if (!node) {
+        return null;
+    }
 
-export async function redisDel(key: Redis.KeyType) {
-    await redis.del(key);
-}
-
-export async function redisGet(key: Redis.KeyType): Promise<string | null> {
-    return await redis.get(key);
+    return parseNode(node);
 }
